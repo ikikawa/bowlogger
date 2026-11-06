@@ -6,9 +6,9 @@
 
   WHAT IT DOES
     • Samples gyro + accel at 833 Hz (a native LSM6DS3 rate; close enough to the 800 Hz in the plan).
-    • Keeps a rolling 4-second buffer in RAM.
+    • Keeps a rolling 6-second buffer in RAM.
     • Watches the accelerometer for the release spike. When it fires, it captures 1 s more,
-      freezes the buffer, and streams the whole 4 s window (3 s before, 1 s after) over BLE.
+      freezes the buffer, and streams the whole 6 s window (5 s before, 1 s after) over BLE.
     • One-time tilt calibration: hold the bow still in your normal aiming orientation and send 'c'.
       The firmware measures gravity, builds a rotation that maps the sensor frame onto the bow frame
       (X = right, Y = up the riser, Z = toward the target), measures gyro bias, and stores all of it
@@ -68,7 +68,7 @@ using namespace Adafruit_LittleFS_Namespace;
 
 // ───────────────────────────── Tunables ─────────────────────────────
 constexpr uint16_t SAMPLE_RATE_HZ  = 833;     // LSM6DS3 native ODR
-constexpr float    PRE_SECONDS     = 3.0f;    // kept before the release
+constexpr float    PRE_SECONDS     = 5.0f;    // kept before the release (long enough to see the whole hold)
 constexpr float    POST_SECONDS    = 1.0f;    // kept after the release
 constexpr float    DEFAULT_TRIG_G  = 5.0f;    // |a| − 1 g above this = release (tune with 'G')
 constexpr uint32_t REARM_MS        = 2000;    // ignore new triggers this long after a shot

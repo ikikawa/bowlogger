@@ -163,19 +163,45 @@
   <input type="range" id="tgtScrub" min="0" max="1000" value="1000" style="width:100%;margin:8px 0 0">
   <div class="note" id="tgtTime" style="font-family:var(--font-mono)"></div>
 
-  <div class="row" style="margin-top:10px">
+  <h2 style="margin-top:18px">Shot timing</h2>
+  <canvas id="cTimer" class="chart" style="height:130px"></canvas>
+  <div class="stats" style="margin-top:8px">
+    <div class="stat"><div class="k">Hold before release</div><div class="v" id="tmHold">–<span class="u">s</span></div></div>
+    <div class="stat"><div class="k">Break to peak shock</div><div class="v" id="tmPeak">–<span class="u">ms</span></div></div>
+    <div class="stat"><div class="k">Release burst until settled</div><div class="v" id="tmSettle">–<span class="u">ms</span></div></div>
+  </div>
+  <p class="note" style="margin-top:6px">Hold starts when the bow's rotation speed last dropped below 15°/s and stayed there. "Settled" is when it falls under 25°/s after the shot. Arrow departure isn't marked yet: that needs real-shot data to pick out reliably.</p>
+
+  <h2 style="margin-top:18px">Placement</h2>
+  <div class="tgtwrap">
+    <canvas id="cPlace" class="tgt" style="touch-action:none;cursor:crosshair"></canvas>
+    <div class="tgtside">
+      <p class="note" id="plInfo" style="margin:0">Tap the face where this arrow hit.</p>
+      <button id="btnClearHit">Clear</button>
+      <p class="note" style="margin:0">Uses the face size chosen above. Earlier hits from the log show as small dots; the current tag's in orange.</p>
+    </div>
+  </div>
+
+  <div class="row" style="margin-top:12px">
     <input type="text" id="tagInput" placeholder="Setup tag, e.g. 12in bar + side rod">
-    <button id="btnSave" disabled>Save shot to log</button>
+    <button class="primary" id="btnSave" disabled>Save shot to log</button>
   </div>
 </section>
 
 <section>
   <h2>Shot log</h2>
   <div class="tablewrap"><table>
-    <thead><tr><th>#</th><th>Tag</th><th class="num">RMS °</th><th class="num">Rel yaw °</th><th class="num">Rel cant °</th><th class="num">Peak g</th><th></th></tr></thead>
+    <thead><tr><th>#</th><th>When</th><th>Tag</th><th class="num">Float °</th><th class="num">Hold s</th><th class="num">Rel yaw °</th><th class="num">Rel cant °</th><th class="num">Score</th><th></th></tr></thead>
     <tbody id="logBody"></tbody>
   </table></div>
   <p class="note" id="logNote" style="margin-top:8px"></p>
+  <canvas id="cTrend" class="chart" style="height:140px;margin-top:8px"></canvas>
+  <div class="row" style="margin-top:8px">
+    <button id="btnCopyCsv">Copy log as CSV</button>
+    <button id="btnDlCsv">Download CSV</button>
+    <button id="btnClearLog">Clear log</button>
+    <span class="note" id="csvNote" style="margin:0"></span>
+  </div>
 </section>
 
 <details>
@@ -371,7 +397,7 @@
   // Bow frame: X right, Y up, Z toward target. yaw = about Y, pitch = about X, cant = about Z.
   function fromRaw(raw, rate, trig, gLsb, aLsb, label) {
     const n = raw.length, dt = 1 / rate;
-    const t = new Float32Array(n), yaw = new Float32Array(n), pitch = new Float32Array(n), cant = new Float32Array(n), acc = new Float32Array(n);
+    const t = new Float32Array(n), yaw = new Float32Array(n), pitch = new Float32Array(n), cant = new Float32Array(n), acc = new Float32Array(n), gmag = new Float32Array(n);
     let Y = 0, P = 0, C = 0;
     for (let i = 0; i < n; i++) {
       const s = raw[i];
@@ -379,11 +405,36 @@
       if (i > 0) { const p = raw[i-1]; P += 0.5*(gx + p[0]*gLsb)*dt; Y += 0.5*(gy + p[1]*gLsb)*dt; C += 0.5*(gz + p[2]*gLsb)*dt; }
       t[i] = (i - trig) * dt; yaw[i] = Y; pitch[i] = P; cant[i] = C;
       acc[i] = Math.hypot(s[3]*aLsb, s[4]*aLsb, s[5]*aLsb);
+      gmag[i] = Math.hypot(gx, gy, gz);
     }
     // zero angles at release
     const y0 = yaw[trig], p0 = pitch[trig], c0 = cant[trig];
     for (let i = 0; i < n; i++) { yaw[i] -= y0; pitch[i] -= p0; cant[i] -= c0; }
-    return finish({ t, yaw, pitch, cant, acc, rate, trig, label });
+    return finish({ t, yaw, pitch, cant, acc, gmag, rate, trig, label });
+  }
+
+  // ───────── Timing: when the hold started, how long the release burst lasted ─────────
+  const HOLD_DPS = 15;      // smoothed rotation below this counts as "holding"
+  const SETTLE_DPS = 25;    // after release, below this for 100 ms = settled
+  function timing(sh) {
+    const { gmag, acc, rate, trig } = sh, n = gmag.length;
+    const w = Math.round(0.1 * rate);               // 100 ms moving average
+    const sm = new Float32Array(n); let s = 0;
+    for (let i = 0; i < n; i++) { s += gmag[i]; if (i >= w) s -= gmag[i - w]; sm[i] = s / Math.min(i + 1, w); }
+    sh.gsmooth = sm;
+    // hold start: last time before release (excluding the final 150 ms) that the bow was still moving noticeably
+    let hs = -1;
+    for (let i = trig - Math.round(0.15 * rate); i >= 0; i--) if (sm[i] > HOLD_DPS) { hs = i; break; }
+    sh.holdStart = hs < 0 ? 0 : hs;
+    sh.holdCapped = hs < 0;                          // held longer than the recorded window
+    sh.holdS = (trig - sh.holdStart) / rate;
+    // break → peak shock
+    let pk = trig; for (let i = trig; i < Math.min(n, trig + Math.round(0.1 * rate)); i++) if (acc[i] > acc[pk]) pk = i;
+    sh.peakIdx = pk; sh.breakToPeakMs = (pk - trig) / rate * 1000;
+    // settle: first point after release where smoothed rotation stays low for 100 ms
+    let st = n - 1;
+    for (let i = trig + Math.round(0.05 * rate); i < n - w; i++) { if (sm[i] < SETTLE_DPS && sm[i + w - 1] < SETTLE_DPS) { st = i; break; } }
+    sh.settleIdx = st; sh.settleMs = (st - trig) / rate * 1000; sh.settleCapped = st === n - 1;
   }
 
   function fromCsv(text) {
@@ -417,8 +468,79 @@
     const extreme = arr => { let e = 0; for (let i = trig; i <= post; i++) if (Math.abs(arr[i]) > Math.abs(e)) e = arr[i]; return e; };
     sh.relYaw = extreme(yaw); sh.relCant = extreme(cant);
     let pk = 0; for (let i = trig; i < acc.length; i++) pk = Math.max(pk, acc[i]); sh.peak = pk;
+    timing(sh);
     return sh;
   }
+
+  // ───────── Timer view ─────────
+  function drawTimer(sh) {
+    const canvas = $('cTimer'), dpr = window.devicePixelRatio || 1, W = canvas.clientWidth, H = canvas.clientHeight;
+    if (!W) return;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    const ctx = canvas.getContext('2d'); ctx.scale(dpr, dpr);
+    ctx.fillStyle = css('--panel'); ctx.fillRect(0, 0, W, H);
+    const L = 8, R = 8, w = W - L - R, n = sh.t.length;
+    const X = i => L + i / (n - 1) * w;
+    const bar = (a, b, color, label) => {
+      ctx.fillStyle = color; ctx.globalAlpha = 0.85; ctx.fillRect(X(a), 22, Math.max(2, X(b) - X(a)), 26); ctx.globalAlpha = 1;
+      if (X(b) - X(a) > 40) { ctx.fillStyle = '#fff'; ctx.font = '11px ' + css('--font-mono'); ctx.textAlign = 'center'; ctx.fillText(label, (X(a) + X(b)) / 2, 39); }
+    };
+    bar(0, sh.holdStart, css('--muted'), 'settling');
+    bar(sh.holdStart, sh.trig, css('--yaw'), `hold ${sh.holdCapped ? '>' : ''}${sh.holdS.toFixed(2)} s`);
+    bar(sh.trig, sh.settleIdx, css('--cant'), `release ${sh.settleMs.toFixed(0)} ms`);
+    bar(sh.settleIdx, n - 1, css('--pitch'), 'follow-through');
+    // smoothed rotation trace under the bars
+    const top = 56, h = H - top - 16; let m = 1; for (let i = 0; i < n; i++) m = Math.max(m, sh.gsmooth[i]);
+    m = Math.min(m, 400);
+    ctx.strokeStyle = css('--grid'); ctx.beginPath(); ctx.moveTo(L, top + h - HOLD_DPS / m * h + 0.5); ctx.lineTo(L + w, top + h - HOLD_DPS / m * h + 0.5); ctx.stroke();
+    ctx.strokeStyle = css('--fg'); ctx.lineWidth = 1.2; ctx.beginPath();
+    const per = Math.max(1, Math.floor(n / (w * 2)));
+    for (let i = 0; i < n; i += per) { const y = top + h - Math.min(sh.gsmooth[i], m) / m * h; i === 0 ? ctx.moveTo(X(i), y) : ctx.lineTo(X(i), y); }
+    ctx.stroke();
+    ctx.fillStyle = css('--muted'); ctx.font = '11px ' + css('--font-mono'); ctx.textAlign = 'left'; ctx.fillText('rotation speed (°/s), 100 ms average', L, 12);
+    ctx.textAlign = 'right'; ctx.fillText(m.toFixed(0) + ' °/s', L + w, top + 10); ctx.fillText(`${sh.t[0].toFixed(0)} s`, L + 30, H - 4); ctx.fillText(`+${sh.t[n-1].toFixed(0)} s`, L + w, H - 4);
+    ctx.textAlign = 'left'; ctx.fillStyle = css('--accent'); ctx.fillText('release', X(sh.trig) + 3, H - 4);
+    ctx.strokeStyle = css('--accent'); ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(X(sh.trig) + 0.5, 18); ctx.lineTo(X(sh.trig) + 0.5, H - 14); ctx.stroke(); ctx.setLineDash([]);
+    $('tmHold').firstChild.textContent = (sh.holdCapped ? '>' : '') + sh.holdS.toFixed(2);
+    $('tmPeak').firstChild.textContent = sh.breakToPeakMs.toFixed(0);
+    $('tmSettle').firstChild.textContent = (sh.settleCapped ? '>' : '') + sh.settleMs.toFixed(0);
+  }
+
+  // ───────── Placement: tap where the arrow hit ─────────
+  const place = { hit: null };   // {x, y} in cm from center, +x right, +y up
+  function faceCm() { return parseFloat($('tgtFace').value); }
+  function scoreFor(hit, face) { if (!hit) return null; const r = Math.hypot(hit.x, hit.y), ring = face / 20; return Math.max(0, 10 - Math.floor(r / ring)); }
+  function drawPlace() {
+    const canvas = $('cPlace'), dpr = window.devicePixelRatio || 1, W = canvas.clientWidth, H = canvas.clientHeight;
+    if (!W) return;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    const ctx = canvas.getContext('2d'); ctx.scale(dpr, dpr);
+    const face = faceCm(), pxPerCm = (W / 2) * 0.94 / (face / 2), ringW = face / 20;
+    const X = cm => W / 2 + cm * pxPerCm, Y = cm => H / 2 - cm * pxPerCm;
+    ctx.fillStyle = css('--panel'); ctx.fillRect(0, 0, W, H);
+    for (let r = 10; r >= 1; r--) { ctx.beginPath(); ctx.arc(W/2, H/2, r * ringW * pxPerCm, 0, Math.PI * 2); ctx.fillStyle = RING_COLORS[r - 1]; ctx.fill(); ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 1; ctx.stroke(); }
+    // previous hits from the log: current tag in accent, others muted
+    const curTag = $('tagInput').value.trim();
+    for (const r of logRows) {
+      if (!r.hit) continue;
+      ctx.beginPath(); ctx.arc(X(r.hit.x), Y(r.hit.y), 4, 0, Math.PI * 2);
+      ctx.fillStyle = (r.tag || '') === curTag ? css('--accent') : 'rgba(128,128,128,0.7)'; ctx.fill(); ctx.strokeStyle = '#000'; ctx.lineWidth = 1; ctx.stroke();
+    }
+    if (place.hit) {
+      ctx.beginPath(); ctx.arc(X(place.hit.x), Y(place.hit.y), 7, 0, Math.PI * 2); ctx.fillStyle = css('--accent'); ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+      $('plInfo').textContent = `${Math.abs(place.hit.x).toFixed(1)} cm ${place.hit.x >= 0 ? 'right' : 'left'}, ${Math.abs(place.hit.y).toFixed(1)} cm ${place.hit.y >= 0 ? 'high' : 'low'} · scores ${scoreFor(place.hit, face)}`;
+    } else $('plInfo').textContent = 'Tap the face where this arrow hit.';
+    ctx.fillStyle = css('--fg'); ctx.font = '11px ' + css('--font-mono'); ctx.textAlign = 'left'; ctx.fillText(face + ' cm face', 8, H - 8);
+  }
+  $('cPlace').addEventListener('pointerdown', e => {
+    const c = $('cPlace'), b = c.getBoundingClientRect(), W = b.width, H = b.height;
+    const face = faceCm(), pxPerCm = (W / 2) * 0.94 / (face / 2);
+    place.hit = { x: (e.clientX - b.left - W / 2) / pxPerCm, y: -(e.clientY - b.top - H / 2) / pxPerCm };
+    drawPlace();
+  });
+  $('btnClearHit').onclick = () => { place.hit = null; drawPlace(); };
+  $('tgtFace').addEventListener('change', drawPlace);
+  $('tagInput').addEventListener('input', drawPlace);
 
   // ───────── Drawing ─────────
   const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
@@ -468,6 +590,8 @@
     $('sPeak').firstChild.textContent = sh.peak.toFixed(1);
     $('btnSave').disabled = false;
     targetReset(sh);
+    drawTimer(sh);
+    place.hit = null; drawPlace();
   }
 
   // ───────── Live view: streamed orientation, drawn as a wandering dot with a 3 s trail ─────────
@@ -653,14 +777,17 @@
   for (const id of ['tgtDist', 'tgtFace']) $(id).onchange = () => tgt.sh && targetReset(tgt.sh);
 
   // ───────── Shot log (per-browser convenience storage) ─────────
+  let uiReady = false;
   let logRows = [];
   try { logRows = JSON.parse(localStorage.getItem('bowlog') || '[]'); } catch (e) { logRows = []; }
   function persist() { try { localStorage.setItem('bowlog', JSON.stringify(logRows)); } catch (e) {} }
+  const fmtWhen = ms => { const d = new Date(ms); return `${d.getMonth()+1}/${d.getDate()} ${d.getHours()}:${String(d.getMinutes()).padStart(2,'0')}`; };
   function renderLog() {
     const tb = $('logBody'); tb.innerHTML = '';
     logRows.forEach((r, i) => {
       const tr = document.createElement('tr');
-      tr.innerHTML = `<td>${i+1}</td><td>${esc(r.tag || '—')}</td><td class="num">${r.rms.toFixed(2)}</td><td class="num">${r.relYaw.toFixed(2)}</td><td class="num">${r.relCant.toFixed(2)}</td><td class="num">${r.peak.toFixed(1)}</td><td></td>`;
+      const sc = r.score == null ? '—' : r.score;
+      tr.innerHTML = `<td>${i+1}</td><td>${r.at ? fmtWhen(r.at) : '—'}</td><td>${esc(r.tag || '—')}</td><td class="num">${r.rms.toFixed(2)}</td><td class="num">${r.holdS == null ? '—' : (r.holdCapped ? '>' : '') + r.holdS.toFixed(1)}</td><td class="num">${r.relYaw.toFixed(2)}</td><td class="num">${r.relCant.toFixed(2)}</td><td class="num">${sc}</td><td></td>`;
       const del = document.createElement('button'); del.textContent = '×'; del.title = 'Remove'; del.style.padding = '2px 8px';
       del.onclick = () => { logRows.splice(i, 1); persist(); renderLog(); };
       tr.lastElementChild.appendChild(del); tb.appendChild(tr);
@@ -669,9 +796,60 @@
     const groups = {}; for (const r of logRows) { (groups[r.tag || '—'] ||= []).push(r); }
     const keys = Object.keys(groups);
     $('logNote').textContent = keys.length
-      ? 'Averages by tag: ' + keys.map(k => { const g = groups[k]; const avg = f => (g.reduce((s, r) => s + f(r), 0) / g.length).toFixed(2); return `${k} (${g.length}): RMS ${avg(r => r.rms)}°, |rel yaw| ${avg(r => Math.abs(r.relYaw))}°`; }).join(' · ')
-      : 'Saved shots stay in this browser only. Tag each shot with its stabilizer setup so the averages mean something.';
+      ? 'Averages by tag: ' + keys.map(k => { const g = groups[k]; const avg = f => { const v = g.map(f).filter(x => x != null && !Number.isNaN(x)); return v.length ? (v.reduce((s, x) => s + x, 0) / v.length).toFixed(2) : '—'; }; return `${k} (${g.length}): float ${avg(r => r.rms)}°, hold ${avg(r => r.holdS)} s, |rel yaw| ${avg(r => Math.abs(r.relYaw))}°, score ${avg(r => r.score)}`; }).join(' · ')
+      : 'Saved shots stay in this browser. Tag each shot with its stabilizer setup so the averages mean something, and download the CSV at the end of a session.';
+    drawTrend();
+    if (uiReady) drawPlace();
   }
+  function drawTrend() {
+    const canvas = $('cTrend'), dpr = window.devicePixelRatio || 1, W = canvas.clientWidth, H = canvas.clientHeight;
+    if (!W) return;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    const ctx = canvas.getContext('2d'); ctx.scale(dpr, dpr);
+    ctx.fillStyle = css('--panel'); ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = css('--muted'); ctx.font = '11px ' + css('--font-mono'); ctx.textAlign = 'left';
+    if (logRows.length < 2) { ctx.fillText('Trend appears after two or more saved shots.', 8, 20); return; }
+    const L = 40, R = 40, T = 20, B = 18, w = W - L - R, h = H - T - B, n = logRows.length;
+    const X = i => L + (n === 1 ? w / 2 : i / (n - 1) * w);
+    const series = [
+      { key: 'rms', color: css('--yaw'), label: 'float °', side: 'left' },
+      { key: 'holdS', color: css('--pitch'), label: 'hold s', side: 'right' },
+    ];
+    for (const s of series) {
+      const vals = logRows.map(r => r[s.key]);
+      let mx = 0; for (const v of vals) if (v != null) mx = Math.max(mx, v);
+      mx = mx || 1; const Y = v => T + h - v / (mx * 1.1) * h;
+      ctx.strokeStyle = s.color; ctx.lineWidth = 1.6; ctx.beginPath(); let started = false;
+      vals.forEach((v, i) => { if (v == null) return; started ? ctx.lineTo(X(i), Y(v)) : ctx.moveTo(X(i), Y(v)); started = true; });
+      ctx.stroke();
+      ctx.fillStyle = s.color;
+      vals.forEach((v, i) => { if (v == null) return; ctx.beginPath(); ctx.arc(X(i), Y(v), 2.5, 0, Math.PI * 2); ctx.fill(); });
+      ctx.textAlign = s.side === 'left' ? 'right' : 'left'; ctx.fillText(mx.toFixed(1), s.side === 'left' ? L - 4 : L + w + 4, T + 4); ctx.fillText('0', s.side === 'left' ? L - 4 : L + w + 4, T + h);
+      ctx.textAlign = s.side === 'left' ? 'left' : 'right'; ctx.fillText(s.label, s.side === 'left' ? L : L + w, 12);
+    }
+    ctx.fillStyle = css('--muted'); ctx.textAlign = 'center'; ctx.fillText('shot 1', X(0), H - 4); ctx.fillText('shot ' + n, X(n - 1), H - 4);
+  }
+  function logCsv() {
+    const cols = ['n', 'time', 'tag', 'float_deg_rms', 'hold_s', 'hold_capped', 'rel_yaw_deg', 'rel_cant_deg', 'peak_g', 'break_to_peak_ms', 'settle_ms', 'hit_x_cm', 'hit_y_cm', 'score', 'face_cm', 'distance_m'];
+    const q = v => v == null ? '' : /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v);
+    const lines = [cols.join(',')];
+    logRows.forEach((r, i) => lines.push([i + 1, r.at ? new Date(r.at).toISOString() : '', r.tag, r.rms?.toFixed(3), r.holdS?.toFixed(3), r.holdCapped ? 1 : 0, r.relYaw?.toFixed(3), r.relCant?.toFixed(3), r.peak?.toFixed(2), r.breakToPeakMs?.toFixed(1), r.settleMs?.toFixed(1), r.hit?.x.toFixed(1), r.hit?.y.toFixed(1), r.score, r.face, r.dist].map(q).join(',')));
+    return lines.join('\n');
+  }
+  $('btnCopyCsv').onclick = async () => {
+    const txt = logCsv();
+    try { await navigator.clipboard.writeText(txt); $('csvNote').textContent = `copied ${logRows.length} rows`; }
+    catch (e) { const ta = document.createElement('textarea'); ta.value = txt; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); $('csvNote').textContent = 'copied'; } catch (e2) { $('csvNote').textContent = 'copy blocked here; use Download'; } ta.remove(); }
+  };
+  $('btnDlCsv').onclick = () => {
+    const blob = new Blob([logCsv()], { type: 'text/csv' }), a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = `bowlogger-${new Date().toISOString().slice(0, 10)}.csv`; document.body.appendChild(a); a.click(); a.remove();
+    $('csvNote').textContent = 'download started (if nothing happened, this host blocks downloads; use Copy)';
+  };
+  $('btnClearLog').onclick = () => {
+    if ($('btnClearLog').dataset.armed) { logRows = []; persist(); renderLog(); $('btnClearLog').textContent = 'Clear log'; delete $('btnClearLog').dataset.armed; return; }
+    $('btnClearLog').dataset.armed = '1'; $('btnClearLog').textContent = 'Tap again to clear all'; setTimeout(() => { $('btnClearLog').textContent = 'Clear log'; delete $('btnClearLog').dataset.armed; }, 3000);
+  };
   function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
   renderLog();
 
@@ -704,14 +882,20 @@
   if (!navigator.serial) $('btnSerial').disabled = true;
   $('btnSave').onclick = () => {
     if (!current) return;
-    logRows.push({ tag: $('tagInput').value.trim(), rms: current.rms, relYaw: current.relYaw, relCant: current.relCant, peak: current.peak, at: Date.now() });
+    const face = faceCm();
+    logRows.push({ tag: $('tagInput').value.trim(), rms: current.rms, relYaw: current.relYaw, relCant: current.relCant, peak: current.peak,
+                   holdS: current.holdS, holdCapped: current.holdCapped, breakToPeakMs: current.breakToPeakMs, settleMs: current.settleMs,
+                   hit: place.hit ? { x: +place.hit.x.toFixed(2), y: +place.hit.y.toFixed(2) } : null, score: scoreFor(place.hit, face), face,
+                   dist: parseFloat($('tgtDist').value), at: Date.now() });
     persist(); renderLog();
+    $('btnSave').textContent = 'Saved'; setTimeout(() => $('btnSave').textContent = 'Save shot to log', 1200);
   };
   $('btnCsv').onclick = () => { try { show(fromCsv($('csvIn').value)); log('plotted pasted CSV'); } catch (e) { log('CSV parse failed: ' + e.message); } };
   $('btnDemo').onclick = () => show(demo());
-  window.addEventListener('resize', () => { if (current) { const p = tgt.pos; show(current); tgt.pos = p; drawTarget(); } });
+  window.addEventListener('resize', () => { if (current) { const p = tgt.pos, hit = place.hit; show(current); tgt.pos = p; drawTarget(); place.hit = hit; drawPlace(); } drawTrend(); drawLive(); });
   if (window.matchMedia) window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => current && show(current));
 
+  uiReady = true;
   show(demo());
   log(hasBle ? 'Web Bluetooth available' : 'Web Bluetooth not available in this browser');
 })();
