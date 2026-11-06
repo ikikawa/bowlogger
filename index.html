@@ -107,7 +107,7 @@
     <button id="btnZero" disabled>Zero yaw</button>
     <label class="note" style="margin:0">Scale
       <select id="liveScale" style="font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--fg)">
-        <option value="1">±1°</option><option value="2" selected>±2°</option><option value="5">±5°</option><option value="15">±15°</option>
+        <option value="auto" selected>Auto</option><option value="1">±1°</option><option value="2">±2°</option><option value="5">±5°</option><option value="15">±15°</option><option value="30">±30°</option>
       </select></label>
   </div>
   <div class="livewrap">
@@ -488,7 +488,11 @@
     if (!W) return;
     canvas.width = W * dpr; canvas.height = H * dpr;
     const ctx = canvas.getContext('2d'); ctx.scale(dpr, dpr);
-    const scale = parseFloat($('liveScale').value);
+    let scale = $('liveScale').value;
+    if (scale === 'auto') {
+      let m = 0; for (const p of live.trail) m = Math.max(m, Math.abs(p.yaw), Math.abs(p.pitch));
+      scale = [0.5, 1, 2, 5, 15, 30, 60].find(s => s >= m * 1.1) || 60;
+    } else scale = parseFloat(scale);
     const pxPerDeg = (W / 2) * 0.92 / scale;
     const X = d => W / 2 + d * pxPerDeg, Y = d => H / 2 - d * pxPerDeg;
     ctx.fillStyle = css('--panel'); ctx.fillRect(0, 0, W, H);
@@ -507,7 +511,16 @@
       ctx.beginPath(); ctx.arc(X(p.yaw), Y(p.pitch), 2 + 2 * (1 - age), 0, Math.PI * 2); ctx.fill();
     }
     ctx.globalAlpha = 1;
-    if (live.last) { ctx.beginPath(); ctx.arc(X(L.yaw), Y(L.pitch), 7, 0, Math.PI * 2); ctx.fillStyle = css('--accent'); ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke(); }
+    if (live.last) {
+      const lim = scale * 0.98;
+      const off = Math.abs(L.yaw) > lim || Math.abs(L.pitch) > lim;
+      const dx = Math.max(-lim, Math.min(lim, L.yaw)), dy = Math.max(-lim, Math.min(lim, L.pitch));
+      ctx.beginPath(); ctx.arc(X(dx), Y(dy), 7, 0, Math.PI * 2);
+      ctx.fillStyle = off ? css('--panel') : css('--accent'); ctx.fill();
+      ctx.strokeStyle = off ? css('--accent') : '#fff'; ctx.lineWidth = 2; ctx.stroke();
+      if (off) { ctx.fillStyle = css('--accent'); ctx.font = '11px ' + css('--font-mono'); ctx.textAlign = 'center'; ctx.fillText('off scale', W/2, 14); }
+    }
+    ctx.fillStyle = css('--muted'); ctx.font = '11px ' + css('--font-mono'); ctx.textAlign = 'right'; ctx.fillText('±' + scale + '°', W - 6, H - 6);
     // cant bar
     const cb = $('cCantBar'), cw = cb.clientWidth, ch = cb.clientHeight;
     cb.width = cw * dpr; cb.height = ch * dpr;
