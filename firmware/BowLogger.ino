@@ -33,6 +33,8 @@
          r   resend the last shot over BLE
          s   print status
          a   toggle auto-dump (default ON: every shot is printed as CSV over USB while a host is connected)
+         L   toggle the live orientation stream over BLE (PktLive, ~50 Hz)
+         z   zero the live yaw (pitch and cant are gravity-referenced and zero themselves at the calibrated aim)
          G6  set trigger threshold to 6 g (any number; default below)
        The same single-letter commands work when written to the BLE control characteristic.
 
@@ -47,6 +49,7 @@
                   f32 gyroLsbDps; f32 accelLsbG; u8 calibrated; f32 gravity[3]; u32 uptimeMs; }
       PktData   { u8 type=2; u16 shotId; u16 seq; u8 n; Sample s[n]; }     Sample = i16 gx,gy,gz,ax,ay,az
       PktEnd    { u8 type=3; u16 shotId; u16 packets; f32 peakG; f32 aimRmsDps; u16 crc16; }
+      PktLive   { u8 type=4; i16 yaw, pitch, cant (0.01°); u8 state; }   streamed ~50 Hz while live mode ('L') is on
     Units: multiply gyro by gyroLsbDps to get deg/s, accel by accelLsbG to get g.
     Axes (after calibration): X = right, Y = up, Z = toward target. Yaw = rotation about Y,
     pitch about X, cant (roll) about Z. Before calibration you get raw sensor axes.
@@ -165,6 +168,22 @@ static bool     haveShot = false;    // ring holds a frozen, complete shot
 static float    triggerG = DEFAULT_TRIG_G;
 static float    postPeakG = 0;
 static bool     autoDumpSerial = true;   // print each shot as CSV over USB when a host is listening ('a' toggles)
+
+// Live orientation stream ('L' toggles). Angles in degrees, bow frame, relative to the calibrated aim.
+// Pitch and cant: complementary filter (gyro + gravity), so they don't drift. Yaw has no gravity reference,
+// so it is gyro-only with a slow leak back to zero; 'z' zeroes it instantly.
+static bool     liveOn = false;
+static float    liveYaw = 0, livePitch = 0, liveCant = 0;
+static uint16_t liveDiv = 0;
+constexpr uint16_t LIVE_EVERY_N  = 17;      // 833 / 17 ≈ 49 packets per second
+constexpr float    LIVE_ACC_TAU  = 1.0f;    // s: how fast gravity pulls pitch/cant back
+constexpr float    LIVE_YAW_TAU  = 20.0f;   // s: yaw recentering time constant
+
+struct __attribute__((packed)) PktLive {
+  uint8_t type;          // 4
+  int16_t yaw, pitch, cant;   // 0.01 degree units
+  uint8_t state;
+};
 
 static Calibration cal = {};
 static bool calibrated = false;
@@ -489,7 +508,8 @@ static void queueCommand(const char* txt, size_t len) {
   if (len == 0) return;
   char c = txt[0];
   if (c == 'g') c = 'G';
-  else if (c >= 'A' && c <= 'Z' && c != 'G') c = (char)(c - 'A' + 'a');
+  else if (c == 'l') c = 'L';
+  else if (c >= 'A' && c <= 'Z' && c != 'G' && c != 'L') c = (char)(c - 'A' + 'a');
   pendingArg = (len > 1) ? atof(txt + 1) : 0;
   pendingCmd = c;
 }
@@ -508,6 +528,8 @@ static void handlePendingCommand() {
     case 'r': sendShotBLE(); break;
     case 's': printStatus(); publishStatus(); break;
     case 'a': autoDumpSerial = !autoDumpSerial; Serial.printf("Auto-dump over USB: %s\n", autoDumpSerial ? "on" : "off"); break;
+    case 'L': liveOn = !liveOn; liveYaw = 0; Serial.printf("Live stream: %s\n", liveOn ? "on" : "off"); break;
+    case 'z': liveYaw = 0; Serial.println("Yaw zeroed"); break;
     case 'G':
       if (pendingArg >= 1.0f && pendingArg <= 15.0f) { triggerG = pendingArg; Serial.printf("Trigger threshold = %.1f g\n", triggerG); }
       else Serial.println("Trigger threshold must be 1..15 g, e.g. G6");
@@ -628,6 +650,34 @@ void loop() {
   written++;
 
   float aMag = sqrtf((float)s.ax*s.ax + (float)s.ay*s.ay + (float)s.az*s.az) * ACCEL_LSB_G;
+
+  // Live orientation estimate (cheap enough to run every sample).
+  {
+    constexpr float dt = 1.0f / SAMPLE_RATE_HZ;
+    const float gx = s.gx * GYRO_LSB_DPS, gy = s.gy * GYRO_LSB_DPS, gz = s.gz * GYRO_LSB_DPS;
+    livePitch += gx * dt; liveYaw += gy * dt; liveCant += gz * dt;
+    liveYaw -= liveYaw * (dt / LIVE_YAW_TAU);
+    // Gravity reference for pitch and cant, trusted only when the bow isn't being shocked (|a| near 1 g).
+    if (fabsf(aMag - 1.0f) < 0.15f) {
+      const float ax = s.ax, ay = s.ay, az = s.az;
+      const float pAcc = atan2f(az, -ay) * 57.2958f;    // bow frame: Y up, Z toward target
+      const float cAcc = atan2f(-ax, -ay) * 57.2958f;
+      const float k = dt / LIVE_ACC_TAU;
+      livePitch += (pAcc - livePitch) * k;
+      liveCant  += (cAcc - liveCant)  * k;
+    }
+    if (liveOn && ++liveDiv >= LIVE_EVERY_N) {
+      liveDiv = 0;
+      if (Bluefruit.connected() && dataChr.notifyEnabled()) {
+        PktLive p; p.type = 4;
+        p.yaw = (int16_t)lrintf(fmaxf(-320.f, fminf(320.f, liveYaw)) * 100.f);
+        p.pitch = (int16_t)lrintf(fmaxf(-320.f, fminf(320.f, livePitch)) * 100.f);
+        p.cant = (int16_t)lrintf(fmaxf(-320.f, fminf(320.f, liveCant)) * 100.f);
+        p.state = state;
+        dataChr.notify(&p, sizeof p);
+      }
+    }
+  }
 
   switch (state) {
     case ST_FILLING:

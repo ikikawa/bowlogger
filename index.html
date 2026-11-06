@@ -71,6 +71,8 @@
   .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin-bottom: 6px; flex-wrap: wrap; }
   .legend i { display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 5px; border-radius: 2px; }
   .tgtwrap { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-start; }
+  .livewrap { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-start; }
+  .cantbar { width: 44px; height: 320px; max-height: 80vw; display: block; border-radius: 8px; flex: 0 0 auto; }
   .tgt { width: 320px; max-width: 100%; aspect-ratio: 1; display: block; border-radius: 8px; flex: 0 0 auto; }
   .tgtside { flex: 1 1 180px; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
   input[type=range] { accent-color: var(--accent); }
@@ -97,6 +99,28 @@
   <div class="row" style="margin-top:6px"><input type="text" id="serialIn" placeholder="type a command: c, t, p, s, G6"><button id="btnSerialSend">Send</button></div>
 </div>
 <p class="note" id="bleNote"></p>
+
+<section id="liveSec">
+  <h2>Live</h2>
+  <div class="row" style="margin-bottom:8px">
+    <button id="btnLive" disabled>Start live view</button>
+    <button id="btnZero" disabled>Zero yaw</button>
+    <label class="note" style="margin:0">Scale
+      <select id="liveScale" style="font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--fg)">
+        <option value="1">±1°</option><option value="2" selected>±2°</option><option value="5">±5°</option><option value="15">±15°</option>
+      </select></label>
+  </div>
+  <div class="livewrap">
+    <canvas id="cCantBar" class="cantbar"></canvas>
+    <canvas id="cLive" class="tgt"></canvas>
+    <div class="tgtside">
+      <div class="stat"><div class="k">Yaw</div><div class="v" id="lYaw">–<span class="u">°</span></div></div>
+      <div class="stat"><div class="k">Pitch</div><div class="v" id="lPitch">–<span class="u">°</span></div></div>
+      <div class="stat"><div class="k">Cant</div><div class="v" id="lCant">–<span class="u">°</span></div></div>
+      <p class="note" style="margin:0">Dot = where the bow points right now, relative to your calibrated aim. Trail = last 3 s. Pitch and cant are gravity-referenced; yaw slowly recenters, or tap Zero yaw at anchor.</p>
+    </div>
+  </div>
+</section>
 
 <section>
   <h2>Last shot <span id="shotLabel" class="tag-ex"></span></h2>
@@ -193,6 +217,8 @@
     $('connPill').classList.toggle('on', on);
     $('connText').textContent = on ? (name || 'connected') : 'not connected';
     for (const id of ['btnCal', 'btnTest', 'btnResend', 'btnStatus']) $(id).disabled = !on && !serialWriter;
+    for (const id of ['btnLive', 'btnZero']) $(id).disabled = !on;   // live view is BLE-only
+    if (!on && live.on) { live.on = false; $('btnLive').textContent = 'Start live view'; }
     $('btnConnect').textContent = on ? 'Disconnect' : 'Connect to BowLogger';
   }
 
@@ -326,6 +352,8 @@
         }
         off += 12;
       }
+    } else if (type === 4) {
+      onLive(dv.getInt16(1, true) / 100, dv.getInt16(3, true) / 100, dv.getInt16(5, true) / 100, dv.getUint8(7));
     } else if (type === 3) {
       if (!rx) return;
       const peak = dv.getFloat32(5, true), aimRms = dv.getFloat32(9, true);
@@ -441,6 +469,69 @@
     $('btnSave').disabled = false;
     targetReset(sh);
   }
+
+  // ───────── Live view: streamed orientation, drawn as a wandering dot with a 3 s trail ─────────
+  const live = { on: false, trail: [], raf: 0, last: null };
+  function onLive(yaw, pitch, cant, st) {
+    const now = performance.now();
+    live.last = { yaw, pitch, cant, st, t: now };
+    live.trail.push(live.last);
+    while (live.trail.length && now - live.trail[0].t > 3000) live.trail.shift();
+    $('lYaw').firstChild.textContent = (yaw >= 0 ? '+' : '') + yaw.toFixed(2);
+    $('lPitch').firstChild.textContent = (pitch >= 0 ? '+' : '') + pitch.toFixed(2);
+    $('lCant').firstChild.textContent = (cant >= 0 ? '+' : '') + cant.toFixed(2);
+    if (!live.raf) live.raf = requestAnimationFrame(drawLive);
+  }
+  function drawLive() {
+    live.raf = 0;
+    const canvas = $('cLive'), dpr = window.devicePixelRatio || 1, W = canvas.clientWidth, H = canvas.clientHeight;
+    if (!W) return;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    const ctx = canvas.getContext('2d'); ctx.scale(dpr, dpr);
+    const scale = parseFloat($('liveScale').value);
+    const pxPerDeg = (W / 2) * 0.92 / scale;
+    const X = d => W / 2 + d * pxPerDeg, Y = d => H / 2 - d * pxPerDeg;
+    ctx.fillStyle = css('--panel'); ctx.fillRect(0, 0, W, H);
+    // rings every scale/4 degrees, crosshair
+    ctx.strokeStyle = css('--grid'); ctx.lineWidth = 1; ctx.fillStyle = css('--muted'); ctx.font = '11px ' + css('--font-mono'); ctx.textAlign = 'left';
+    for (let r = 1; r <= 4; r++) { const d = scale * r / 4; ctx.beginPath(); ctx.arc(W/2, H/2, d * pxPerDeg, 0, Math.PI * 2); ctx.stroke(); ctx.fillText(d.toFixed(scale >= 5 ? 0 : 2) + '°', X(d) + 3, H/2 - 3); }
+    ctx.strokeStyle = css('--line'); ctx.beginPath(); ctx.moveTo(0, H/2 + 0.5); ctx.lineTo(W, H/2 + 0.5); ctx.moveTo(W/2 + 0.5, 0); ctx.lineTo(W/2 + 0.5, H); ctx.stroke();
+    const now = performance.now();
+    const L = live.last || { yaw: 0, pitch: 0, cant: 0 };
+    if (!live.last) { ctx.fillStyle = css('--muted'); ctx.textAlign = 'center'; ctx.fillText(live.on ? 'waiting for data…' : 'press Start live view', W/2, H - 14); }
+    // trail: older = fainter and smaller
+    for (const p of live.trail) {
+      const age = (now - p.t) / 3000;
+      ctx.globalAlpha = Math.max(0.05, 1 - age);
+      ctx.fillStyle = css('--yaw');
+      ctx.beginPath(); ctx.arc(X(p.yaw), Y(p.pitch), 2 + 2 * (1 - age), 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    if (live.last) { ctx.beginPath(); ctx.arc(X(L.yaw), Y(L.pitch), 7, 0, Math.PI * 2); ctx.fillStyle = css('--accent'); ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke(); }
+    // cant bar
+    const cb = $('cCantBar'), cw = cb.clientWidth, ch = cb.clientHeight;
+    cb.width = cw * dpr; cb.height = ch * dpr;
+    const c2 = cb.getContext('2d'); c2.scale(dpr, dpr);
+    c2.fillStyle = css('--panel'); c2.fillRect(0, 0, cw, ch);
+    const cs = 15, pxPerDegC = (ch / 2) * 0.9 / cs;
+    c2.strokeStyle = css('--grid'); c2.fillStyle = css('--muted'); c2.font = '10px ' + css('--font-mono'); c2.textAlign = 'right';
+    for (let d = -cs; d <= cs; d += 5) { const y = ch/2 - d * pxPerDegC; c2.beginPath(); c2.moveTo(cw - 10, y + 0.5); c2.lineTo(cw, y + 0.5); c2.stroke(); if (d % 15 === 0) c2.fillText(d + '°', cw - 12, y + 3); }
+    const cy = ch/2 - Math.max(-cs, Math.min(cs, L.cant)) * pxPerDegC;
+    c2.strokeStyle = css('--cant'); c2.lineWidth = 3; c2.beginPath(); c2.moveTo(cw - 14, cy); c2.lineTo(cw, cy); c2.stroke();
+    // tilted bow line to show the cant direction
+    c2.save(); c2.translate(cw/2 - 8, ch/2); c2.rotate(-L.cant * Math.PI / 180); c2.strokeStyle = css('--fg'); c2.lineWidth = 2; c2.beginPath(); c2.moveTo(0, -ch * 0.3); c2.lineTo(0, ch * 0.3); c2.stroke(); c2.restore();
+  }
+  async function toggleLive() {
+    live.on = !live.on;
+    await sendCmd('L');
+    $('btnLive').textContent = live.on ? 'Stop live view' : 'Start live view';
+    if (live.on) { live.trail = []; live.last = null; try { if (navigator.wakeLock) navigator.wakeLock.request('screen').catch(() => {}); } catch (e) {} }
+    drawLive();
+  }
+  $('btnLive').onclick = toggleLive;
+  $('btnZero').onclick = () => sendCmd('z');
+  $('liveScale').onchange = () => drawLive();
+  drawLive();
 
   // ───────── Target view: pin path projected onto a face ─────────
   // Pin offset on the face = distance × tan(angle). Yaw → horizontal, pitch → vertical.
