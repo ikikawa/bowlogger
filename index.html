@@ -1,0 +1,614 @@
+<title>BowLogger Range Test</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  /* Layout: one column, phone-first. Status strip on top, three stacked trace charts, numbers under them, shot log last. */
+  :root {
+    --bg: #f3f4ef;        /* chalky range-card paper */
+    --panel: #ffffff;
+    --fg: #1d2420;
+    --muted: #677069;
+    --line: #d9ddd4;
+    --accent: #b5461c;    /* fletching orange */
+    --yaw: #1f5fa8;
+    --pitch: #2a8c5a;
+    --cant: #b5461c;
+    --grid: #e6e9e2;
+    --ok: #2a8c5a;
+    --warn: #c28a12;
+    --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #151916; --panel: #1e2420; --fg: #e8ebe4; --muted: #9aa49c; --line: #30382f;
+      --accent: #e5733f; --yaw: #6ea5e6; --pitch: #5fc08b; --cant: #e5733f; --grid: #262d27;
+      --ok: #5fc08b; --warn: #e0b04a; color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #151916; --panel: #1e2420; --fg: #e8ebe4; --muted: #9aa49c; --line: #30382f;
+    --accent: #e5733f; --yaw: #6ea5e6; --pitch: #5fc08b; --cant: #e5733f; --grid: #262d27;
+    --ok: #5fc08b; --warn: #e0b04a; color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px; line-height: 1.45;
+         padding-inline: 16px; padding-block: 12px 32px; max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 20px; font-weight: 600; margin: 0; letter-spacing: -0.01em; text-wrap: balance; }
+  h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 8px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+  .pill { font-family: var(--font-mono); font-size: 12px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+  .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .pill.on .dot { background: var(--ok); }
+  .pill.on { color: var(--fg); }
+  .bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+  button { font: inherit; font-weight: 500; padding: 9px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--fg); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: 0.45; cursor: default; }
+  button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .note { font-size: 13px; color: var(--muted); margin: 0 0 14px; }
+  .note b { color: var(--fg); font-weight: 500; }
+  section { margin-bottom: 20px; }
+  .chart { width: 100%; max-width: 100%; display: block; height: 150px; }
+  .chartwrap { position: relative; margin-bottom: 10px; }
+  .chartwrap .lbl { position: absolute; top: 6px; left: 44px; font-size: 12px; font-weight: 600; letter-spacing: 0.03em; }
+  .chartwrap .val { position: absolute; top: 6px; right: 8px; font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; min-width: 0; }
+  .stat .k { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+  .stat .v { font-family: var(--font-mono); font-size: 20px; font-weight: 500; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .stat .u { font-size: 12px; color: var(--muted); margin-left: 3px; font-weight: 400; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  input[type=text] { font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--fg); min-width: 0; flex: 1 1 160px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 7px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { font-weight: 600; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+  td.num, th.num { text-align: right; font-family: var(--font-mono); }
+  .tablewrap { overflow-x: auto; }
+  details { border-top: 1px solid var(--line); padding-top: 10px; }
+  summary { cursor: pointer; font-weight: 500; }
+  textarea { width: 100%; min-height: 110px; font-family: var(--font-mono); font-size: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--fg); padding: 8px; margin-top: 8px; }
+  .log { font-family: var(--font-mono); font-size: 12px; color: var(--muted); max-height: 120px; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; white-space: pre-wrap; }
+  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin-bottom: 6px; flex-wrap: wrap; }
+  .legend i { display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 5px; border-radius: 2px; }
+  .tgtwrap { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-start; }
+  .tgt { width: 320px; max-width: 100%; aspect-ratio: 1; display: block; border-radius: 8px; flex: 0 0 auto; }
+  .tgtside { flex: 1 1 180px; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+  input[type=range] { accent-color: var(--accent); }
+  .tag-ex { font-size: 12px; color: var(--warn); font-weight: 500; }
+  @media (prefers-reduced-motion: no-preference) { button { transition: opacity .15s; } }
+</style>
+
+<header>
+  <h1>BowLogger Range Test</h1>
+  <span class="pill" id="connPill"><span class="dot"></span><span id="connText">not connected</span></span>
+</header>
+
+<div class="bar">
+  <button class="primary" id="btnConnect">Connect to BowLogger</button>
+  <button id="btnSerial">Connect over USB</button>
+  <button id="btnCal" disabled>Calibrate</button>
+  <button id="btnTest" disabled>Test trigger</button>
+  <button id="btnResend" disabled>Resend last</button>
+  <button id="btnStatus" disabled>Status</button>
+</div>
+<div id="serialBox" hidden style="margin-bottom:14px">
+  <h2>USB serial</h2>
+  <div class="log" id="serialLog" style="max-height:160px"></div>
+  <div class="row" style="margin-top:6px"><input type="text" id="serialIn" placeholder="type a command: c, t, p, s, G6"><button id="btnSerialSend">Send</button></div>
+</div>
+<p class="note" id="bleNote"></p>
+
+<section>
+  <h2>Last shot <span id="shotLabel" class="tag-ex"></span></h2>
+  <div class="legend"><span><i style="background:var(--yaw)"></i>Yaw (left/right)</span><span><i style="background:var(--pitch)"></i>Pitch (up/down)</span><span><i style="background:var(--cant)"></i>Cant (roll)</span></div>
+  <div class="chartwrap"><canvas class="chart" id="cYaw"></canvas><span class="lbl" style="color:var(--yaw)">YAW</span><span class="val" id="vYaw"></span></div>
+  <div class="chartwrap"><canvas class="chart" id="cPitch"></canvas><span class="lbl" style="color:var(--pitch)">PITCH</span><span class="val" id="vPitch"></span></div>
+  <div class="chartwrap"><canvas class="chart" id="cCant"></canvas><span class="lbl" style="color:var(--cant)">CANT</span><span class="val" id="vCant"></span></div>
+  <div class="chartwrap"><canvas class="chart" id="cAcc" style="height:90px"></canvas><span class="lbl" style="color:var(--muted)">|ACCEL| g</span><span class="val" id="vAcc"></span></div>
+  <div class="stats">
+    <div class="stat"><div class="k">Steadiness, last 1.5 s</div><div class="v" id="sRms">–<span class="u">° RMS</span></div></div>
+    <div class="stat"><div class="k">Release yaw, first 100 ms</div><div class="v" id="sRelYaw">–<span class="u">°</span></div></div>
+    <div class="stat"><div class="k">Release cant, first 100 ms</div><div class="v" id="sRelCant">–<span class="u">°</span></div></div>
+    <div class="stat"><div class="k">Peak shock</div><div class="v" id="sPeak">–<span class="u">g</span></div></div>
+  </div>
+  <h2 style="margin-top:18px">Pin path on target</h2>
+  <div class="row" style="margin-bottom:8px">
+    <label class="note" style="margin:0">Distance
+      <select id="tgtDist" style="font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--fg)">
+        <option value="18.29">20 yd</option><option value="27.43">30 yd</option><option value="36.58" selected>40 yd</option><option value="45.72">50 yd</option><option value="54.86">60 yd</option><option value="70">70 m</option>
+      </select></label>
+    <label class="note" style="margin:0">Face
+      <select id="tgtFace" style="font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--fg)">
+        <option value="40">40 cm</option><option value="60">60 cm</option><option value="80" selected>80 cm</option><option value="122">122 cm</option>
+      </select></label>
+    <label class="note" style="margin:0">Speed
+      <select id="tgtSpeed" style="font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--fg)">
+        <option value="0.1">0.1×</option><option value="0.25" selected>0.25×</option><option value="0.5">0.5×</option><option value="1">1×</option>
+      </select></label>
+    <button id="tgtPlay">Play</button>
+  </div>
+  <div class="tgtwrap">
+    <canvas id="cTarget" class="tgt"></canvas>
+    <div class="tgtside">
+      <div class="stat"><div class="k">Pin at release</div><div class="v" id="tRel">–</div></div>
+      <div class="stat"><div class="k">Float, last 1.5 s</div><div class="v" id="tFloat">–<span class="u">cm</span></div></div>
+      <div class="stat"><div class="k">Pin moved in first 100 ms</div><div class="v" id="tJump">–<span class="u">cm</span></div></div>
+      <p class="note" style="margin:0">Center is your average aim over the last 1.5 s. Blue path = aiming, orange = after release. Scale assumes the bow pivots; it won't show the bow sliding sideways.</p>
+    </div>
+  </div>
+  <input type="range" id="tgtScrub" min="0" max="1000" value="1000" style="width:100%;margin:8px 0 0">
+  <div class="note" id="tgtTime" style="font-family:var(--font-mono)"></div>
+
+  <div class="row" style="margin-top:10px">
+    <input type="text" id="tagInput" placeholder="Setup tag, e.g. 12in bar + side rod">
+    <button id="btnSave" disabled>Save shot to log</button>
+  </div>
+</section>
+
+<section>
+  <h2>Shot log</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>#</th><th>Tag</th><th class="num">RMS °</th><th class="num">Rel yaw °</th><th class="num">Rel cant °</th><th class="num">Peak g</th><th></th></tr></thead>
+    <tbody id="logBody"></tbody>
+  </table></div>
+  <p class="note" id="logNote" style="margin-top:8px"></p>
+</section>
+
+<details>
+  <summary>No Bluetooth? Paste a serial CSV dump</summary>
+  <p class="note" style="margin-top:8px">In the Arduino Serial Monitor type <b>p</b>, copy everything from the <b># shot=</b> line to <b># end</b>, paste it here.</p>
+  <textarea id="csvIn" placeholder="# shot=1 rate=833 trigger_index=2498 ...&#10;t_ms,gx_dps,gy_dps,gz_dps,ax_g,ay_g,az_g&#10;..."></textarea>
+  <div class="row" style="margin-top:8px"><button id="btnCsv">Plot pasted CSV</button><button id="btnDemo">Load example shot</button></div>
+</details>
+
+<details style="margin-top:12px">
+  <summary>Connection log</summary>
+  <div class="log" id="logBox"></div>
+</details>
+
+<script>
+(() => {
+  'use strict';
+  const SVC  = '7a1e0001-4b6f-4d6f-9c2e-6c6f67676572';
+  const DATA = '7a1e0002-4b6f-4d6f-9c2e-6c6f67676572';
+  const CTRL = '7a1e0003-4b6f-4d6f-9c2e-6c6f67676572';
+  const STAT = '7a1e0004-4b6f-4d6f-9c2e-6c6f67676572';
+
+  const $ = id => document.getElementById(id);
+  const logBox = $('logBox');
+  function log(msg) { const t = new Date().toLocaleTimeString(); logBox.textContent += `[${t}] ${msg}\n`; logBox.scrollTop = logBox.scrollHeight; }
+
+  // ───────── BLE ─────────
+  let device = null, ctrlChr = null, dataChr = null, serialWriter = null;
+  let rx = null;   // in-progress shot: {header, samples:[], expected, got, seq}
+  let current = null; // last processed shot
+
+  const hasBle = !!(navigator.bluetooth && navigator.bluetooth.requestDevice);
+  $('bleNote').innerHTML = hasBle
+    ? 'Power the logger, tap <b>Connect</b>, pick <b>BowLogger</b>. Then hold the bow still in your aiming position and tap <b>Calibrate</b> once.'
+    : 'This browser has no Web Bluetooth. On iPhone open this page in the <b>Bluefy</b> browser; on Android or a laptop use Chrome. On a PC with the board on USB, <b>Connect over USB</b> works in Chrome or Edge. The CSV paste below works anywhere.';
+  $('btnConnect').disabled = !hasBle;
+
+  function setConnected(on, name) {
+    $('connPill').classList.toggle('on', on);
+    $('connText').textContent = on ? (name || 'connected') : 'not connected';
+    for (const id of ['btnCal', 'btnTest', 'btnResend', 'btnStatus']) $(id).disabled = !on && !serialWriter;
+    $('btnConnect').textContent = on ? 'Disconnect' : 'Connect to BowLogger';
+  }
+
+  const step = (s) => { log(s); $('connText').textContent = s; };
+  async function connect() {
+    try {
+      step('opening device picker…');
+      const pick = navigator.bluetooth.requestDevice({ filters: [{ services: [SVC] }], optionalServices: [SVC] });
+      const timer = setTimeout(() => step('still waiting for the picker to hand back a device… (20 s)'), 20000);
+      device = await pick; clearTimeout(timer);
+      step(`picked ${device.name || 'device'}, connecting…`);
+      device.addEventListener('gattserverdisconnected', () => { log('disconnected'); setConnected(false); });
+      const server = await device.gatt.connect();
+      step('connected, finding service…');
+      const svc = await server.getPrimaryService(SVC);
+      step('service found, getting characteristics…');
+      dataChr = await svc.getCharacteristic(DATA);
+      ctrlChr = await svc.getCharacteristic(CTRL);
+      try {
+        const statChr = await svc.getCharacteristic(STAT);
+        await statChr.startNotifications();
+        statChr.addEventListener('characteristicvaluechanged', e => onStatus(e.target.value));
+        onStatus(await statChr.readValue());
+      } catch (e) { log('status characteristic unavailable: ' + e.message); }
+      step('enabling shot notifications…');
+      await dataChr.startNotifications();
+      dataChr.addEventListener('characteristicvaluechanged', e => onPacket(e.target.value));
+      setConnected(true, device.name);
+      log('connected, waiting for shots');
+    } catch (e) { step('connect failed: ' + (e && e.message || e)); setConnected(false); $('connText').textContent = 'failed: ' + (e && e.message || e); }
+  }
+  async function disconnect() { try { device && device.gatt.connected && device.gatt.disconnect(); } catch (e) {} setConnected(false); }
+  async function sendCmd(c) {
+    if (serialWriter) { return serialSend(c); }
+    if (!ctrlChr) return;
+    try { await ctrlChr.writeValue(new TextEncoder().encode(c)); log(`sent '${c}'`); }
+    catch (e) { log(`command failed: ${e.message}`); }
+  }
+
+  // ───────── USB serial (Web Serial, Chrome/Edge on desktop) ─────────
+  let serialPort = null, csvBuf = null;
+  const serialLog = $('serialLog');
+  function slog(line) { serialLog.textContent += line + '\n'; if (serialLog.textContent.length > 20000) serialLog.textContent = serialLog.textContent.slice(-15000); serialLog.scrollTop = serialLog.scrollHeight; }
+  async function serialSend(c) {
+    try { await serialWriter.write(new TextEncoder().encode(c + '\n')); slog('> ' + c); } catch (e) { log('serial write failed: ' + e.message); }
+  }
+  function onSerialLine(ln) {
+    if (ln.startsWith('# shot=')) { csvBuf = [ln]; slog(ln); return; }
+    if (csvBuf) {
+      csvBuf.push(ln);
+      if (ln.startsWith('# end')) {
+        try { show(fromCsv(csvBuf.join('\n'))); slog(`[plotted ${csvBuf.length - 3} samples]`); } catch (e) { log('CSV parse failed: ' + e.message); }
+        csvBuf = null;
+      }
+      return;
+    }
+    slog(ln);
+  }
+  async function serialConnect() {
+    if (!navigator.serial) { log('Web Serial not available: use Chrome or Edge on a desktop'); return; }
+    try {
+      serialPort = await navigator.serial.requestPort();
+      await serialPort.open({ baudRate: 115200 });
+      serialWriter = serialPort.writable.getWriter();
+      $('serialBox').hidden = false;
+      $('btnSerial').textContent = 'Disconnect USB';
+      for (const id of ['btnCal', 'btnTest', 'btnResend', 'btnStatus']) $(id).disabled = false;
+      $('btnResend').textContent = 'Dump last shot (p)';
+      $('connPill').classList.add('on'); $('connText').textContent = 'USB serial';
+      log('USB serial open at 115200');
+      const decoder = new TextDecoderStream();
+      serialPort.readable.pipeTo(decoder.writable).catch(() => {});
+      const reader = decoder.readable.getReader();
+      let buf = '';
+      (async () => {
+        try {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buf += value;
+            let i;
+            while ((i = buf.indexOf('\n')) >= 0) { const ln = buf.slice(0, i).replace(/\r$/, ''); buf = buf.slice(i + 1); if (ln.length) onSerialLine(ln); }
+          }
+        } catch (e) { log('serial closed: ' + e.message); }
+        serialDisconnected();
+      })();
+    } catch (e) { log('USB connect failed: ' + e.message); }
+  }
+  function serialDisconnected() {
+    serialWriter = null; serialPort = null; csvBuf = null;
+    $('btnSerial').textContent = 'Connect over USB';
+    $('btnResend').textContent = 'Resend last';
+    if (!(device && device.gatt && device.gatt.connected)) setConnected(false);
+  }
+  async function serialDisconnect() {
+    try { serialWriter && serialWriter.releaseLock(); } catch (e) {}
+    try { serialPort && await serialPort.close(); } catch (e) {}
+    serialDisconnected();
+  }
+
+  function onStatus(dv) {
+    if (dv.byteLength < 8) return;
+    const states = ['filling buffer', 'armed', 'capturing', 'sending', 'calibrating'];
+    const st = dv.getUint8(0), cal = dv.getUint8(1), shots = dv.getUint16(2, true), mv = dv.getUint16(4, true);
+    $('connText').textContent = `${states[st] || st} · ${cal ? 'calibrated' : 'NOT calibrated'} · ${(mv/1000).toFixed(2)} V · ${shots} shots`;
+    if (!cal) log('logger is not calibrated: hold still at aim and tap Calibrate');
+  }
+
+  function onPacket(dv) {
+    const type = dv.getUint8(0);
+    if (type === 1) {
+      rx = {
+        header: {
+          shotId: dv.getUint16(1, true), n: dv.getUint16(3, true), rate: dv.getUint16(5, true),
+          trig: dv.getUint16(7, true), gyroLsb: dv.getFloat32(9, true), accLsb: dv.getFloat32(13, true),
+          calibrated: dv.getUint8(17), gravity: [dv.getFloat32(18, true), dv.getFloat32(22, true), dv.getFloat32(26, true)],
+        },
+        samples: new Array(dv.getUint16(3, true)), got: 0,
+      };
+      log(`shot ${rx.header.shotId}: header, ${rx.header.n} samples @ ${rx.header.rate} Hz`);
+    } else if (type === 2) {
+      if (!rx) return;
+      const seq = dv.getUint16(3, true), n = dv.getUint8(5);
+      let off = 6;
+      for (let k = 0; k < n; k++) {
+        const idx = seq * 19 + k;
+        if (idx < rx.samples.length) {
+          rx.samples[idx] = [dv.getInt16(off, true), dv.getInt16(off+2, true), dv.getInt16(off+4, true),
+                             dv.getInt16(off+6, true), dv.getInt16(off+8, true), dv.getInt16(off+10, true)];
+          rx.got++;
+        }
+        off += 12;
+      }
+    } else if (type === 3) {
+      if (!rx) return;
+      const peak = dv.getFloat32(5, true), aimRms = dv.getFloat32(9, true);
+      const missing = rx.samples.length - rx.got;
+      log(`shot ${rx.header.shotId} complete, ${missing ? missing + ' samples missing (gaps filled)' : 'no gaps'}; device peak ${peak.toFixed(1)} g`);
+      for (let i = 0; i < rx.samples.length; i++) if (!rx.samples[i]) rx.samples[i] = rx.samples[i-1] || [0,0,0,0,0,0];
+      const h = rx.header;
+      const shot = fromRaw(rx.samples, h.rate, h.trig, h.gyroLsb, h.accLsb, `Shot ${h.shotId}${h.calibrated ? '' : ' (uncalibrated)'}`);
+      rx = null;
+      show(shot);
+    }
+  }
+
+  // ───────── Processing ─────────
+  // Bow frame: X right, Y up, Z toward target. yaw = about Y, pitch = about X, cant = about Z.
+  function fromRaw(raw, rate, trig, gLsb, aLsb, label) {
+    const n = raw.length, dt = 1 / rate;
+    const t = new Float32Array(n), yaw = new Float32Array(n), pitch = new Float32Array(n), cant = new Float32Array(n), acc = new Float32Array(n);
+    let Y = 0, P = 0, C = 0;
+    for (let i = 0; i < n; i++) {
+      const s = raw[i];
+      const gx = s[0]*gLsb, gy = s[1]*gLsb, gz = s[2]*gLsb;
+      if (i > 0) { const p = raw[i-1]; P += 0.5*(gx + p[0]*gLsb)*dt; Y += 0.5*(gy + p[1]*gLsb)*dt; C += 0.5*(gz + p[2]*gLsb)*dt; }
+      t[i] = (i - trig) * dt; yaw[i] = Y; pitch[i] = P; cant[i] = C;
+      acc[i] = Math.hypot(s[3]*aLsb, s[4]*aLsb, s[5]*aLsb);
+    }
+    // zero angles at release
+    const y0 = yaw[trig], p0 = pitch[trig], c0 = cant[trig];
+    for (let i = 0; i < n; i++) { yaw[i] -= y0; pitch[i] -= p0; cant[i] -= c0; }
+    return finish({ t, yaw, pitch, cant, acc, rate, trig, label });
+  }
+
+  function fromCsv(text) {
+    const lines = text.split(/\r?\n/);
+    let rate = 833, trig = null, label = 'CSV shot';
+    const rows = [];
+    for (const ln of lines) {
+      if (ln.startsWith('#')) {
+        const m = ln.match(/shot=(\d+).*rate=(\d+).*trigger_index=(\d+)/);
+        if (m) { label = `Shot ${m[1]} (CSV)`; rate = +m[2]; trig = +m[3]; }
+        continue;
+      }
+      if (!/^-?\d/.test(ln)) continue;
+      const v = ln.split(',').map(Number);
+      if (v.length >= 7 && v.every(x => !Number.isNaN(x))) rows.push(v);
+    }
+    if (rows.length < 100) throw new Error('need at least 100 CSV rows');
+    if (trig === null) trig = rows.findIndex(r => r[0] >= 0); if (trig < 0) trig = Math.floor(rows.length * 0.75);
+    // convert dps / g rows into the same path as raw by using scale 1
+    const raw = rows.map(r => [r[1], r[2], r[3], r[4], r[5], r[6]]);
+    return fromRaw(raw, rate, trig, 1, 1, label);
+  }
+
+  function finish(sh) {
+    const { yaw, pitch, cant, acc, rate, trig } = sh;
+    const win = Math.round(1.5 * rate), a = Math.max(0, trig - win);
+    const dev = arr => { let m = 0; for (let i = a; i < trig; i++) m += arr[i]; m /= (trig - a);
+                         let s = 0; for (let i = a; i < trig; i++) s += (arr[i]-m)**2; return s / (trig - a); };
+    sh.rms = Math.sqrt(dev(yaw) + dev(pitch) + dev(cant));          // combined angular RMS, degrees
+    const post = Math.min(sh.t.length - 1, trig + Math.round(0.1 * rate));
+    const extreme = arr => { let e = 0; for (let i = trig; i <= post; i++) if (Math.abs(arr[i]) > Math.abs(e)) e = arr[i]; return e; };
+    sh.relYaw = extreme(yaw); sh.relCant = extreme(cant);
+    let pk = 0; for (let i = trig; i < acc.length; i++) pk = Math.max(pk, acc[i]); sh.peak = pk;
+    return sh;
+  }
+
+  // ───────── Drawing ─────────
+  const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+  function drawTrace(canvas, t, y, color, unit, { zeroLine = true, symmetric = true, valEl } = {}) {
+    const dpr = window.devicePixelRatio || 1;
+    const W = canvas.clientWidth, H = canvas.clientHeight;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    const ctx = canvas.getContext('2d'); ctx.scale(dpr, dpr);
+    const L = 44, R = 10, T = 24, B = 20, w = W - L - R, h = H - T - B;
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = css('--panel'); ctx.fillRect(0, 0, W, H);
+    const tMin = t[0], tMax = t[t.length-1];
+    let yMax = 0.1; for (let i = 0; i < y.length; i++) yMax = Math.max(yMax, Math.abs(y[i]));
+    let lo = symmetric ? -yMax : 0, hi = yMax;
+    if (!symmetric) { lo = 0; hi = Math.max(1.5, yMax) * 1.05; } else { lo *= 1.1; hi *= 1.1; }
+    const X = v => L + (v - tMin) / (tMax - tMin) * w, Yp = v => T + (hi - v) / (hi - lo) * h;
+    // grid
+    ctx.strokeStyle = css('--grid'); ctx.lineWidth = 1; ctx.font = '11px ' + css('--font-mono'); ctx.fillStyle = css('--muted');
+    for (let s = Math.ceil(tMin); s <= tMax; s++) { ctx.beginPath(); ctx.moveTo(X(s)+0.5, T); ctx.lineTo(X(s)+0.5, T+h); ctx.stroke(); ctx.textAlign = 'center'; ctx.fillText((s>0?'+':'')+s+' s', X(s), H-5); }
+    const step = niceStep((hi - lo) / 4);
+    for (let v = Math.ceil(lo/step)*step; v <= hi; v += step) { ctx.beginPath(); ctx.moveTo(L, Yp(v)+0.5); ctx.lineTo(L+w, Yp(v)+0.5); ctx.stroke(); ctx.textAlign = 'right'; ctx.fillText(fmt(v)+unit, L-4, Yp(v)+4); }
+    if (zeroLine && lo < 0) { ctx.strokeStyle = css('--line'); ctx.beginPath(); ctx.moveTo(L, Yp(0)+0.5); ctx.lineTo(L+w, Yp(0)+0.5); ctx.stroke(); }
+    // release marker
+    ctx.strokeStyle = css('--accent'); ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(X(0)+0.5, T); ctx.lineTo(X(0)+0.5, T+h); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = css('--accent'); ctx.textAlign = 'left'; ctx.fillText('release', X(0)+4, T+h-4);
+    // trace (decimate to pixel columns)
+    ctx.strokeStyle = color; ctx.lineWidth = 1.6; ctx.lineJoin = 'round'; ctx.beginPath();
+    const per = Math.max(1, Math.floor(t.length / (w*2)));
+    for (let i = 0; i < t.length; i += per) { const px = X(t[i]), py = Yp(y[i]); i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py); }
+    ctx.stroke();
+    if (valEl) { let mn = Infinity, mx = -Infinity; for (let i = 0; i < y.length; i++) { mn = Math.min(mn, y[i]); mx = Math.max(mx, y[i]); } valEl.textContent = `${fmt(mn)} to ${fmt(mx)}${unit}`; }
+  }
+  function niceStep(r) { const p = Math.pow(10, Math.floor(Math.log10(r))); const m = r / p; return (m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10) * p; }
+  function fmt(v) { return Math.abs(v) >= 10 ? v.toFixed(0) : Math.abs(v) >= 1 ? v.toFixed(1) : v.toFixed(2); }
+
+  function show(sh) {
+    current = sh;
+    $('shotLabel').textContent = sh.label.includes('example') ? sh.label : '';
+    document.querySelector('h2').firstChild.textContent = sh.label.includes('example') ? 'Last shot ' : `${sh.label} `;
+    drawTrace($('cYaw'),   sh.t, sh.yaw,   css('--yaw'),   '°', { valEl: $('vYaw') });
+    drawTrace($('cPitch'), sh.t, sh.pitch, css('--pitch'), '°', { valEl: $('vPitch') });
+    drawTrace($('cCant'),  sh.t, sh.cant,  css('--cant'),  '°', { valEl: $('vCant') });
+    drawTrace($('cAcc'),   sh.t, sh.acc,   css('--muted'), 'g', { symmetric: false, valEl: $('vAcc') });
+    $('sRms').firstChild.textContent = sh.rms.toFixed(2);
+    $('sRelYaw').firstChild.textContent = (sh.relYaw >= 0 ? '+' : '') + sh.relYaw.toFixed(2);
+    $('sRelCant').firstChild.textContent = (sh.relCant >= 0 ? '+' : '') + sh.relCant.toFixed(2);
+    $('sPeak').firstChild.textContent = sh.peak.toFixed(1);
+    $('btnSave').disabled = false;
+    targetReset(sh);
+  }
+
+  // ───────── Target view: pin path projected onto a face ─────────
+  // Pin offset on the face = distance × tan(angle). Yaw → horizontal, pitch → vertical.
+  // Centered on the mean aim over the last 1.5 s before release, so the float sits around the middle.
+  const tgt = { sh: null, cx: 0, cy: 0, pos: 1, playing: false, raf: 0, lastTs: 0 };
+  const RING_COLORS = ['#f2d21b', '#f2d21b', '#d8322a', '#d8322a', '#2a63c4', '#2a63c4', '#1a1a1a', '#1a1a1a', '#f4f4f4', '#f4f4f4'];
+  function tgtParams() {
+    const D = parseFloat($('tgtDist').value) * 100;           // cm
+    const face = parseFloat($('tgtFace').value);              // cm
+    const sh = tgt.sh, rate = sh.rate, trig = sh.trig;
+    const toCm = (deg) => Math.tan(deg * Math.PI / 180) * D;
+    const i0 = Math.max(0, trig - Math.round(1.5 * rate)), i1 = Math.min(sh.t.length - 1, trig + Math.round(0.3 * rate));
+    return { D, face, toCm, i0, i1 };
+  }
+  function targetReset(sh) {
+    tgt.sh = sh; tgt.playing = false; cancelAnimationFrame(tgt.raf); $('tgtPlay').textContent = 'Play';
+    const { toCm, i0 } = tgtParams();
+    const trig = sh.trig; let sx = 0, sy = 0;
+    for (let i = i0; i < trig; i++) { sx += sh.yaw[i]; sy += sh.pitch[i]; }
+    tgt.cx = sx / (trig - i0); tgt.cy = sy / (trig - i0);
+    // stats
+    let f = 0; for (let i = i0; i < trig; i++) { const dx = toCm(sh.yaw[i] - tgt.cx), dy = toCm(sh.pitch[i] - tgt.cy); f += dx*dx + dy*dy; }
+    const floatCm = Math.sqrt(f / (trig - i0));
+    const rx = toCm(sh.yaw[trig] - tgt.cx), ry = toCm(sh.pitch[trig] - tgt.cy);
+    const post = Math.min(sh.t.length - 1, trig + Math.round(0.1 * sh.rate));
+    let jump = 0; for (let i = trig; i <= post; i++) { const d = Math.hypot(toCm(sh.yaw[i] - sh.yaw[trig]), toCm(sh.pitch[i] - sh.pitch[trig])); if (d > jump) jump = d; }
+    $('tFloat').firstChild.textContent = floatCm.toFixed(1);
+    $('tJump').firstChild.textContent = jump.toFixed(1);
+    $('tRel').textContent = `${Math.abs(rx).toFixed(1)} cm ${rx >= 0 ? 'right' : 'left'}, ${Math.abs(ry).toFixed(1)} cm ${ry >= 0 ? 'high' : 'low'}`;
+    tgt.pos = 1; $('tgtScrub').value = 1000;
+    drawTarget();
+  }
+  function drawTarget() {
+    const sh = tgt.sh; if (!sh) return;
+    const canvas = $('cTarget');
+    const dpr = window.devicePixelRatio || 1, W = canvas.clientWidth, H = canvas.clientHeight;
+    if (!W) return;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    const ctx = canvas.getContext('2d'); ctx.scale(dpr, dpr);
+    const { face, toCm, i0, i1 } = tgtParams();
+    const trig = sh.trig;
+    // scale so the face fills ~92% of the canvas, but zoom in if the path is tiny
+    let maxR = 0;   // sized to the aiming float only; the release kick is allowed to run off the edge
+    for (let i = i0; i <= trig; i++) maxR = Math.max(maxR, Math.hypot(toCm(sh.yaw[i] - tgt.cx), toCm(sh.pitch[i] - tgt.cy)));
+    const viewCm = Math.max(face / 2, maxR * 1.15);
+    const pxPerCm = (W / 2) * 0.92 / viewCm;
+    const X = cm => W / 2 + cm * pxPerCm, Y = cm => H / 2 - cm * pxPerCm;
+    ctx.fillStyle = css('--panel'); ctx.fillRect(0, 0, W, H);
+    // rings, outer to inner (10 scoring rings, each face/20 cm wide)
+    const ringW = face / 20;
+    for (let r = 10; r >= 1; r--) {
+      ctx.beginPath(); ctx.arc(W / 2, H / 2, r * ringW * pxPerCm, 0, Math.PI * 2);
+      ctx.fillStyle = RING_COLORS[r - 1]; ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 1; ctx.stroke();
+    }
+    ctx.beginPath(); ctx.arc(W / 2, H / 2, ringW * 0.5 * pxPerCm, 0, Math.PI * 2); ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.stroke(); // X ring
+    // scale bar: 10 cm
+    ctx.strokeStyle = css('--fg'); ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(12, H - 12); ctx.lineTo(12 + 10 * pxPerCm, H - 12); ctx.stroke();
+    ctx.fillStyle = css('--fg'); ctx.font = '11px ' + css('--font-mono'); ctx.textAlign = 'left'; ctx.fillText('10 cm', 12, H - 17);
+    // path up to the scrub position
+    const iEnd = i0 + Math.round((i1 - i0) * tgt.pos);
+    const seg = (from, to, color, width) => {
+      if (to <= from) return;
+      ctx.lineWidth = width; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+      const step = Math.max(1, Math.floor((to - from) / 600));
+      for (let i = from + step; i <= to; i += step) {
+        const a = 0.25 + 0.75 * (i - from) / (to - from);  // older = fainter
+        ctx.strokeStyle = color; ctx.globalAlpha = a;
+        ctx.beginPath(); ctx.moveTo(X(toCm(sh.yaw[i - step] - tgt.cx)), Y(toCm(sh.pitch[i - step] - tgt.cy)));
+        ctx.lineTo(X(toCm(sh.yaw[i] - tgt.cx)), Y(toCm(sh.pitch[i] - tgt.cy))); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    };
+    seg(i0, Math.min(iEnd, trig), css('--yaw'), 2.2);
+    if (iEnd > trig) seg(trig, iEnd, css('--cant'), 2.2);
+    // release marker
+    if (iEnd >= trig) {
+      const rx = X(toCm(sh.yaw[trig] - tgt.cx)), ry = Y(toCm(sh.pitch[trig] - tgt.cy));
+      ctx.strokeStyle = css('--fg'); ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(rx - 7, ry - 7); ctx.lineTo(rx + 7, ry + 7); ctx.moveTo(rx + 7, ry - 7); ctx.lineTo(rx - 7, ry + 7); ctx.stroke();
+    }
+    // current pin dot
+    const px = X(toCm(sh.yaw[iEnd] - tgt.cx)), py = Y(toCm(sh.pitch[iEnd] - tgt.cy));
+    ctx.beginPath(); ctx.arc(px, py, 5, 0, Math.PI * 2); ctx.fillStyle = iEnd > trig ? css('--cant') : css('--yaw'); ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
+    $('tgtTime').textContent = `t = ${sh.t[iEnd] >= 0 ? '+' : ''}${sh.t[iEnd].toFixed(3)} s` + (iEnd >= trig ? '  (released)' : '  (aiming)');
+  }
+  function tgtTick(ts) {
+    if (!tgt.playing) return;
+    const sh = tgt.sh, { i0, i1 } = tgtParams();
+    const span = (i1 - i0) / sh.rate;                       // seconds of real time in the clip
+    const dt = tgt.lastTs ? (ts - tgt.lastTs) / 1000 : 0; tgt.lastTs = ts;
+    tgt.pos += dt * parseFloat($('tgtSpeed').value) / span;
+    if (tgt.pos >= 1) { tgt.pos = 1; tgt.playing = false; $('tgtPlay').textContent = 'Replay'; }
+    $('tgtScrub').value = Math.round(tgt.pos * 1000);
+    drawTarget();
+    if (tgt.playing) tgt.raf = requestAnimationFrame(tgtTick);
+  }
+  $('tgtPlay').onclick = () => {
+    if (!tgt.sh) return;
+    if (tgt.playing) { tgt.playing = false; cancelAnimationFrame(tgt.raf); $('tgtPlay').textContent = 'Play'; return; }
+    if (tgt.pos >= 1) tgt.pos = 0;
+    tgt.playing = true; tgt.lastTs = 0; $('tgtPlay').textContent = 'Pause'; tgt.raf = requestAnimationFrame(tgtTick);
+  };
+  $('tgtScrub').oninput = e => { tgt.playing = false; cancelAnimationFrame(tgt.raf); $('tgtPlay').textContent = 'Play'; tgt.pos = e.target.value / 1000; drawTarget(); };
+  for (const id of ['tgtDist', 'tgtFace']) $(id).onchange = () => tgt.sh && targetReset(tgt.sh);
+
+  // ───────── Shot log (per-browser convenience storage) ─────────
+  let logRows = [];
+  try { logRows = JSON.parse(localStorage.getItem('bowlog') || '[]'); } catch (e) { logRows = []; }
+  function persist() { try { localStorage.setItem('bowlog', JSON.stringify(logRows)); } catch (e) {} }
+  function renderLog() {
+    const tb = $('logBody'); tb.innerHTML = '';
+    logRows.forEach((r, i) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${i+1}</td><td>${esc(r.tag || '—')}</td><td class="num">${r.rms.toFixed(2)}</td><td class="num">${r.relYaw.toFixed(2)}</td><td class="num">${r.relCant.toFixed(2)}</td><td class="num">${r.peak.toFixed(1)}</td><td></td>`;
+      const del = document.createElement('button'); del.textContent = '×'; del.title = 'Remove'; del.style.padding = '2px 8px';
+      del.onclick = () => { logRows.splice(i, 1); persist(); renderLog(); };
+      tr.lastElementChild.appendChild(del); tb.appendChild(tr);
+    });
+    // per-tag averages
+    const groups = {}; for (const r of logRows) { (groups[r.tag || '—'] ||= []).push(r); }
+    const keys = Object.keys(groups);
+    $('logNote').textContent = keys.length
+      ? 'Averages by tag: ' + keys.map(k => { const g = groups[k]; const avg = f => (g.reduce((s, r) => s + f(r), 0) / g.length).toFixed(2); return `${k} (${g.length}): RMS ${avg(r => r.rms)}°, |rel yaw| ${avg(r => Math.abs(r.relYaw))}°`; }).join(' · ')
+      : 'Saved shots stay in this browser only. Tag each shot with its stabilizer setup so the averages mean something.';
+  }
+  function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+  renderLog();
+
+  // ───────── Example shot (synthetic, marked as such) ─────────
+  function demo() {
+    const rate = 833, n = 3332, trig = 2498, raw = [];
+    let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647 - 0.5;
+    for (let i = 0; i < n; i++) {
+      const tt = (i - trig) / rate;
+      let gy = 1.2*Math.sin(tt*2.1) + 0.6*Math.sin(tt*7.3) + rnd()*0.8;     // yaw rate, dps
+      let gx = 0.8*Math.sin(tt*1.4+1) + rnd()*0.6;
+      let gz = 0.5*Math.sin(tt*3.0+2) + rnd()*0.5;
+      let ax = 0, ay = -1, az = 0;
+      if (tt >= 0 && tt < 0.08) { const e = Math.exp(-tt/0.015); gy += 180*e*Math.sin(tt*300); gz -= 90*e; az += 14*e*Math.cos(tt*400); ax += 3*e*Math.sin(tt*500); }
+      if (tt >= 0.08 && tt < 0.6) { gy += 25*Math.exp(-(tt-0.08)/0.1); }
+      raw.push([gx/0.0175, gy/0.0175, gz/0.0175, ax/0.000488, ay/0.000488, az/0.000488]);
+    }
+    return fromRaw(raw, rate, trig, 0.0175, 0.000488, 'example shot (synthetic)');
+  }
+
+  // ───────── Wiring ─────────
+  $('btnConnect').onclick = () => (device && device.gatt.connected) ? disconnect() : connect();
+  $('btnCal').onclick = () => sendCmd('c');
+  $('btnTest').onclick = () => sendCmd('t');
+  $('btnResend').onclick = () => sendCmd(serialWriter ? 'p' : 'r');
+  $('btnStatus').onclick = () => sendCmd('s');
+  $('btnSerial').onclick = () => serialWriter ? serialDisconnect() : serialConnect();
+  $('btnSerialSend').onclick = () => { const v = $('serialIn').value.trim(); if (v && serialWriter) { serialSend(v); $('serialIn').value = ''; } };
+  $('serialIn').addEventListener('keydown', e => { if (e.key === 'Enter') $('btnSerialSend').click(); });
+  if (!navigator.serial) $('btnSerial').disabled = true;
+  $('btnSave').onclick = () => {
+    if (!current) return;
+    logRows.push({ tag: $('tagInput').value.trim(), rms: current.rms, relYaw: current.relYaw, relCant: current.relCant, peak: current.peak, at: Date.now() });
+    persist(); renderLog();
+  };
+  $('btnCsv').onclick = () => { try { show(fromCsv($('csvIn').value)); log('plotted pasted CSV'); } catch (e) { log('CSV parse failed: ' + e.message); } };
+  $('btnDemo').onclick = () => show(demo());
+  window.addEventListener('resize', () => { if (current) { const p = tgt.pos; show(current); tgt.pos = p; drawTarget(); } });
+  if (window.matchMedia) window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => current && show(current));
+
+  show(demo());
+  log(hasBle ? 'Web Bluetooth available' : 'Web Bluetooth not available in this browser');
+})();
+</script>
